@@ -6,8 +6,7 @@
 // --- GPIO ---
 #define GPIO_HOOK_SWITCH    GPIO_NUM_32  // NC когда трубка лежит
 #define GPIO_DIAL_PULSE     GPIO_NUM_33  // импульсы диска
-#define GPIO_BELL_1         GPIO_NUM_27  // катушка 1 → BS170
-#define GPIO_BELL_2         GPIO_NUM_14  // катушка 2 → BS170
+#define GPIO_BELL           GPIO_NUM_27  // катушка МТ → BS170
 #define GPIO_BOOST_EN       GPIO_NUM_13  // EN MT3608
 
 // --- I2S (WM8960) ---

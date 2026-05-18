@@ -10,26 +10,24 @@ static volatile bool s_ringing  = false;
 static volatile bool s_on_phase = false;
 static volatile bool s_coil     = false;
 
-// 25 Гц: переключаем катушки каждые 20 мс
+// 25 Гц: одна катушка МТ, пульсирующий ток
 static void toggle_cb(void *arg) {
     s_coil = !s_coil;
-    gpio_set_level(GPIO_BELL_1,  s_coil);
-    gpio_set_level(GPIO_BELL_2, !s_coil);
+    gpio_set_level(GPIO_BELL, s_coil);
 }
 
 static void pattern_cb(void *arg) {
     if (s_on_phase) {
-        // конец фазы ON -> выключить катушки и буст
+        // конец фазы ON -> выключить катушку и буст
         esp_timer_stop(s_toggle_tmr);
-        gpio_set_level(GPIO_BELL_1, 0);
-        gpio_set_level(GPIO_BELL_2, 0);
-        gpio_set_level(GPIO_BOOST_EN, 0);  // Fix 7: буст отключается в паузе
+        gpio_set_level(GPIO_BELL, 0);
+        gpio_set_level(GPIO_BOOST_EN, 0);
         s_on_phase = false;
         if (s_ringing)
             esp_timer_start_once(s_pattern_tmr, BELL_OFF_MS * 1000ULL);
     } else {
-        // конец фазы OFF -> включить буст и катушки
-        gpio_set_level(GPIO_BOOST_EN, 1);  // Fix 7: буст включается перед звонком
+        // конец фазы OFF -> включить буст и катушку
+        gpio_set_level(GPIO_BOOST_EN, 1);
         s_on_phase = true;
         s_coil = false;
         esp_timer_start_periodic(s_toggle_tmr, 1000000ULL / (BELL_FREQ_HZ * 2));
@@ -39,13 +37,9 @@ static void pattern_cb(void *arg) {
 }
 
 void bell_init(void) {
-    gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << GPIO_BELL_1) | (1ULL << GPIO_BELL_2),
-        .mode         = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&cfg);
-    gpio_set_level(GPIO_BELL_1, 0);
-    gpio_set_level(GPIO_BELL_2, 0);
+    gpio_reset_pin(GPIO_BELL);
+    gpio_set_direction(GPIO_BELL, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_BELL, 0);
 
     gpio_reset_pin(GPIO_BOOST_EN);
     gpio_set_direction(GPIO_BOOST_EN, GPIO_MODE_OUTPUT);
@@ -60,8 +54,8 @@ void bell_init(void) {
 void bell_start(void) {
     s_ringing  = true;
     s_on_phase = true;
+    s_coil     = false;
     gpio_set_level(GPIO_BOOST_EN, 1);
-    s_coil = false;
     esp_timer_start_periodic(s_toggle_tmr, 1000000ULL / (BELL_FREQ_HZ * 2));
     esp_timer_start_once(s_pattern_tmr, BELL_ON_MS * 1000ULL);
 }
@@ -70,7 +64,6 @@ void bell_stop(void) {
     s_ringing = false;
     esp_timer_stop(s_toggle_tmr);
     esp_timer_stop(s_pattern_tmr);
-    gpio_set_level(GPIO_BELL_1, 0);
-    gpio_set_level(GPIO_BELL_2, 0);
+    gpio_set_level(GPIO_BELL, 0);
     gpio_set_level(GPIO_BOOST_EN, 0);
 }
