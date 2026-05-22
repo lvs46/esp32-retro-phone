@@ -36,7 +36,7 @@ static void recv_data_cb(const uint8_t *buf, uint32_t size) {
 }
 
 // BT callback: берёт микрофонное аудио из ring buffer и сразу возвращается
-static void send_data_cb(uint8_t *buf, uint32_t size) {
+static uint32_t send_data_cb(uint8_t *buf, uint32_t size) {
     int mono_samples = (int)(size / 2);
     int16_t *out = (int16_t *)buf;
     size_t item_size;
@@ -52,6 +52,7 @@ static void send_data_cb(uint8_t *buf, uint32_t size) {
     } else {
         memset(buf, 0, size);  // underrun → тишина
     }
+    return size;
 }
 
 // Аудиомост: блокирующий I2S вынесен из контекста BT-колбэков
@@ -105,13 +106,10 @@ static void hfp_cb(esp_hf_client_cb_event_t event,
         sm_dispatch(EVT_BT_INCOMING, 0);
         break;
 
-    case ESP_HF_CLIENT_CALL_STATUS_EVT:
-        if (param->call.status == ESP_HF_CLIENT_CALL_STATUS_NO_CALLS)
+    case ESP_HF_CLIENT_CIND_CALL_EVT:
+        if (param->call.status == ESP_HF_CALL_STATUS_NO_CALLS)
             sm_dispatch(EVT_BT_CALL_END, 0);
-        break;
-
-    case ESP_HF_CLIENT_CALLSETUP_IND_EVT:
-        if (param->call_setup.status == ESP_HF_CLIENT_CALLSETUP_STATUS_ACTIVE)
+        else
             sm_dispatch(EVT_BT_ANSWERED, 0);
         break;
 
@@ -136,14 +134,13 @@ bool bt_hfp_is_connected(void) { return s_connected; }
 
 void bt_hfp_reset_pairing(void) {
     ESP_LOGI(TAG, "resetting all pairings");
-    int count = 0;
-    esp_bt_gap_get_bond_device_num(&count);
+    int count = esp_bt_gap_get_bond_device_num();
     if (count > 0) {
-        esp_bt_gap_bond_dev_t *devs = malloc(count * sizeof(esp_bt_gap_bond_dev_t));
+        esp_bd_addr_t *devs = malloc(count * sizeof(esp_bd_addr_t));
         if (devs) {
             esp_bt_gap_get_bond_device_list(&count, devs);
             for (int i = 0; i < count; i++)
-                esp_bt_gap_remove_bond_device(devs[i].bd_addr);
+                esp_bt_gap_remove_bond_device(devs[i]);
             free(devs);
         }
     }
@@ -160,12 +157,12 @@ void bt_hfp_init(i2s_chan_handle_t tx, i2s_chan_handle_t rx) {
     xTaskCreate(audio_bridge_task, "audio_bridge", 4096, NULL, 10, NULL);
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    esp_bt_controller_init(&bt_cfg);
-    esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
-    esp_bluedroid_init();
-    esp_bluedroid_enable();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT));
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
 
-    esp_bt_dev_set_device_name("Retro Phone");
+    esp_bt_gap_set_device_name("Retro Phone");
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
     esp_bt_gap_register_callback(gap_cb);
 
