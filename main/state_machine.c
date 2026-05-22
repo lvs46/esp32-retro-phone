@@ -123,6 +123,7 @@ void sm_dispatch(phone_event_t evt, uint32_t data) {
 
     case STATE_RINGING:
         if (evt == EVT_HOOK_OFF)    { bt_hfp_answer(); enter(STATE_IN_CALL); }
+        if (evt == EVT_BT_ANSWERED) enter(STATE_IN_CALL);   // ответили на смартфоне
         if (evt == EVT_BT_CALL_END) enter(STATE_IDLE);
         break;
 

@@ -121,10 +121,10 @@ void audio_init(i2s_chan_handle_t *tx_out, i2s_chan_handle_t *rx_out) {
             .din  = GPIO_I2S_DIN,
         },
     };
-    i2s_channel_init_std_mode(*tx_out, &std_cfg);
-    i2s_channel_init_std_mode(*rx_out, &std_cfg);
-    i2s_channel_enable(*tx_out);
-    i2s_channel_enable(*rx_out);
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(*tx_out, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(*rx_out, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(*tx_out));
+    ESP_ERROR_CHECK(i2s_channel_enable(*rx_out));
 
     wm8960_init();
 }

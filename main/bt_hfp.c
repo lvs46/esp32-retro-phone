@@ -15,8 +15,10 @@ static const char *TAG = "HFP";
 
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
-static volatile bool s_connected  = false;
-static volatile bool s_sco_active = false;
+static volatile bool s_connected       = false;
+static volatile bool s_sco_active      = false;
+static volatile bool s_want_audio      = false;  // запрос SCO из колбека
+static esp_bd_addr_t s_peer_bda        = {0};
 
 #define AUDIO_RB_BYTES  (1024 * 4)  // ~160 мс при 8 кГц стерео
 
@@ -61,7 +63,31 @@ static void audio_bridge_task(void *arg) {
     int16_t stereo_buf[STEREO_SAMPLES * 2];
     size_t io_size;
 
+    bool  armed     = false;
+    int   countdown = 0;
+    int   tries     = 0;
+
     while (1) {
+        if (s_want_audio && !s_sco_active) {
+            if (!armed) {
+                armed     = true;
+                countdown = 50;   // 50 × 20 мс = 1 с начальная задержка
+                tries     = 0;
+            }
+            if (countdown > 0) {
+                countdown--;
+            } else if (tries < 10) {
+                tries++;
+                countdown = 250;  // 250 × 20 мс = 5 с между повторами
+                // Сброс зависшего CONNECTING перед новой попыткой
+                esp_hf_client_disconnect_audio(s_peer_bda);
+                esp_err_t r = esp_hf_client_connect_audio(s_peer_bda);
+                ESP_LOGI(TAG, "connect_audio #%d: %d", tries, r);
+            }
+        } else {
+            armed = false; countdown = 0; tries = 0;
+        }
+
         if (!s_sco_active) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -88,14 +114,20 @@ static void hfp_cb(esp_hf_client_cb_event_t event,
     case ESP_HF_CLIENT_CONNECTION_STATE_EVT:
         s_connected = (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_CONNECTED ||
                        param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_SLC_CONNECTED);
+        if (s_connected)
+            memcpy(s_peer_bda, param->conn_stat.remote_bda, sizeof(esp_bd_addr_t));
         ESP_LOGI(TAG, "conn state: %d", param->conn_stat.state);
         break;
 
     case ESP_HF_CLIENT_AUDIO_STATE_EVT:
+        ESP_LOGI(TAG, "audio_state: %d", param->audio_stat.state);
         if (param->audio_stat.state == ESP_HF_CLIENT_AUDIO_STATE_CONNECTED ||
             param->audio_stat.state == ESP_HF_CLIENT_AUDIO_STATE_CONNECTED_MSBC) {
             s_sco_active = true;
+            s_want_audio = false;
             sm_dispatch(EVT_SCO_CONNECTED, 0);
+        } else if (param->audio_stat.state == ESP_HF_CLIENT_AUDIO_STATE_CONNECTING) {
+            // ждём CONNECTED или DISCONNECTED, не сбрасываем s_want_audio
         } else {
             s_sco_active = false;
             sm_dispatch(EVT_SCO_CLOSED, 0);
@@ -107,10 +139,14 @@ static void hfp_cb(esp_hf_client_cb_event_t event,
         break;
 
     case ESP_HF_CLIENT_CIND_CALL_EVT:
-        if (param->call.status == ESP_HF_CALL_STATUS_NO_CALLS)
+        if (param->call.status == ESP_HF_CALL_STATUS_NO_CALLS) {
             sm_dispatch(EVT_BT_CALL_END, 0);
-        else
+            s_want_audio = false;
+        } else {
             sm_dispatch(EVT_BT_ANSWERED, 0);
+            if (!s_sco_active)
+                s_want_audio = true;  // audio_bridge_task вызовет connect_audio
+        }
         break;
 
     default:
@@ -173,6 +209,6 @@ void bt_hfp_init(i2s_chan_handle_t tx, i2s_chan_handle_t rx) {
     esp_hf_client_init();
 }
 
-void bt_hfp_dial(const char *number) { esp_hf_client_dial(number);  }
-void bt_hfp_answer(void)             { esp_hf_client_answer_call(); }
-void bt_hfp_hangup(void)             { esp_hf_client_reject_call(); }
+void bt_hfp_dial(const char *number)  { esp_hf_client_dial(number);          }
+void bt_hfp_answer(void)              { esp_hf_client_answer_call();          }
+void bt_hfp_hangup(void)              { esp_hf_client_reject_call();          }
