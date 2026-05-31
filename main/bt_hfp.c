@@ -19,6 +19,7 @@ static volatile bool s_connected       = false;
 static volatile bool s_sco_active      = false;
 static volatile bool s_want_audio      = false;  // запрос SCO из колбека
 static volatile bool s_want_hfp        = false;  // запрос активного HFP-коннекта после ACL
+static volatile esp_hf_call_status_t s_call_status = ESP_HF_CALL_STATUS_NO_CALLS;
 static esp_bd_addr_t s_peer_bda        = {0};
 
 #define AUDIO_RB_BYTES  (1024 * 4)  // ~160 мс при 8 кГц стерео
@@ -160,13 +161,24 @@ static void hfp_cb(esp_hf_client_cb_event_t event,
         break;
 
     case ESP_HF_CLIENT_CIND_CALL_EVT:
-        if (param->call.status == ESP_HF_CALL_STATUS_NO_CALLS) {
+        s_call_status = param->call.status;
+        if (s_call_status == ESP_HF_CALL_STATUS_NO_CALLS) {
             sm_dispatch(EVT_BT_CALL_END, 0);
             s_want_audio = false;
         } else {
             sm_dispatch(EVT_BT_ANSWERED, 0);
             if (!s_sco_active)
                 s_want_audio = true;  // audio_bridge_task вызовет connect_audio
+        }
+        break;
+
+    case ESP_HF_CLIENT_CIND_CALL_SETUP_EVT:
+        // callsetup ушёл в IDLE и активного звонка нет:
+        // звонящий бросил трубку до ответа, или мы отклонили на смартфоне.
+        if (param->call_setup.status == ESP_HF_CALL_SETUP_STATUS_IDLE
+                && s_call_status == ESP_HF_CALL_STATUS_NO_CALLS) {
+            ESP_LOGI(TAG, "incoming call cancelled");
+            sm_dispatch(EVT_BT_CALL_END, 0);
         }
         break;
 
