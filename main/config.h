@@ -5,8 +5,10 @@
 
 // --- GPIO ---
 #define GPIO_HOOK_SWITCH    GPIO_NUM_32  // NC когда трубка лежит
-#define GPIO_DIAL_PULSE     GPIO_NUM_33  // импульсы диска
-#define GPIO_BELL           GPIO_NUM_27  // катушка МТ → BS170
+#define GPIO_DIAL_PULSE     GPIO_NUM_33  // импульсы диска (ИК, жёлтый)
+#define GPIO_DIAL_ACTIVE    GPIO_NUM_16  // диск активен (ЗП, синий) — замкнут при наборе
+#define GPIO_BELL_IN1       GPIO_NUM_27  // L293D IN1 (мост звонка)
+#define GPIO_BELL_IN2       GPIO_NUM_14  // L293D IN2 (мост звонка)
 #define GPIO_BOOST_EN       GPIO_NUM_13  // EN MT3608
 
 // --- I2S (WM8960) ---
@@ -32,6 +34,6 @@
 #define DIGIT_TIMEOUT_MS    280   // пауза между цифрами
 
 // --- Звонок ---
-#define BELL_FREQ_HZ        25
+#define BELL_FREQ_HZ        18
 #define BELL_ON_MS          1000
 #define BELL_OFF_MS         4000

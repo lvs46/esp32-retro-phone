@@ -18,6 +18,7 @@ static i2s_chan_handle_t s_rx;
 static volatile bool s_connected       = false;
 static volatile bool s_sco_active      = false;
 static volatile bool s_want_audio      = false;  // запрос SCO из колбека
+static volatile bool s_want_hfp        = false;  // запрос активного HFP-коннекта после ACL
 static esp_bd_addr_t s_peer_bda        = {0};
 
 #define AUDIO_RB_BYTES  (1024 * 4)  // ~160 мс при 8 кГц стерео
@@ -68,6 +69,19 @@ static void audio_bridge_task(void *arg) {
     int   tries     = 0;
 
     while (1) {
+        // ACL поднялся → ждём 1.5с (вдруг телефон сам поднимет HFP),
+        // и если не поднял — инициируем сами поверх уже живого ACL.
+        if (s_want_hfp && !s_connected) {
+            s_want_hfp = false;
+            for (int i = 0; i < 75 && !s_connected; i++)
+                vTaskDelay(pdMS_TO_TICKS(20));
+            if (!s_connected) {
+                esp_err_t r = esp_hf_client_connect(s_peer_bda);
+                ESP_LOGI(TAG, "active HFP connect: %d", r);
+            }
+        }
+
+
         if (s_want_audio && !s_sco_active) {
             if (!armed) {
                 armed     = true;
@@ -114,8 +128,15 @@ static void hfp_cb(esp_hf_client_cb_event_t event,
     case ESP_HF_CLIENT_CONNECTION_STATE_EVT:
         s_connected = (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_CONNECTED ||
                        param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_SLC_CONNECTED);
-        if (s_connected)
+        if (s_connected) {
             memcpy(s_peer_bda, param->conn_stat.remote_bda, sizeof(esp_bd_addr_t));
+            s_want_hfp = false;                  // уже подключены — отменить активную попытку
+        }
+        if (param->conn_stat.state == ESP_HF_CLIENT_CONNECTION_STATE_DISCONNECTED) {
+            // На всякий случай повторно объявимся как connectable + discoverable,
+            // чтобы телефон мог нас найти и переподключиться
+            esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+        }
         ESP_LOGI(TAG, "conn state: %d", param->conn_stat.state);
         break;
 
@@ -164,6 +185,16 @@ static void gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
         esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
         ESP_LOGI(TAG, "SSP confirm");
     }
+    // Телефон поднял ACL → активно инициируем HFP поверх живого ACL.
+    // Без этого Bluedroid через 4с разорвёт ACL по idle-timeout, т.к. HFP-сервис
+    // телефон сам не открывает на переподключении.
+    if (event == ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT) {
+        if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS && !s_connected) {
+            memcpy(s_peer_bda, param->acl_conn_cmpl_stat.bda, sizeof(esp_bd_addr_t));
+            s_want_hfp = true;
+            ESP_LOGI(TAG, "ACL up — arming HFP connect");
+        }
+    }
 }
 
 bool bt_hfp_is_connected(void) { return s_connected; }
@@ -184,6 +215,28 @@ void bt_hfp_reset_pairing(void) {
     ESP_LOGI(TAG, "ready for new pairing");
 }
 
+// На старте через 5с пробуем сами поднять связь с парным телефоном
+// (как делают настоящие гарнитуры при включении).
+static void boot_reconnect_task(void *arg) {
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    if (s_connected) { vTaskDelete(NULL); return; }
+
+    int count = esp_bt_gap_get_bond_device_num();
+    if (count <= 0) { vTaskDelete(NULL); return; }
+
+    esp_bd_addr_t *devs = malloc(count * sizeof(esp_bd_addr_t));
+    if (!devs) { vTaskDelete(NULL); return; }
+
+    esp_bt_gap_get_bond_device_list(&count, devs);
+    if (count > 0) {
+        memcpy(s_peer_bda, devs[0], sizeof(esp_bd_addr_t));
+        esp_err_t r = esp_hf_client_connect(s_peer_bda);
+        ESP_LOGI(TAG, "boot reconnect: %d", r);
+    }
+    free(devs);
+    vTaskDelete(NULL);
+}
+
 void bt_hfp_init(i2s_chan_handle_t tx, i2s_chan_handle_t rx) {
     s_tx = tx;
     s_rx = rx;
@@ -199,6 +252,15 @@ void bt_hfp_init(i2s_chan_handle_t tx, i2s_chan_handle_t rx) {
     ESP_ERROR_CHECK(esp_bluedroid_enable());
 
     esp_bt_gap_set_device_name("Retro Phone");
+
+    // Class of Device: Audio/Video → Hands-Free Unit + Audio service.
+    // Без этого Android видит ESP32 как «Uncategorized» и не делает HFP-автоконнект.
+    esp_bt_cod_t cod = {0};
+    cod.minor   = 0x02;   // Hands-Free
+    cod.major   = 0x04;   // Audio/Video
+    cod.service = 0x100;  // Audio
+    esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
     esp_bt_gap_register_callback(gap_cb);
 
@@ -207,6 +269,14 @@ void bt_hfp_init(i2s_chan_handle_t tx, i2s_chan_handle_t rx) {
 
     esp_hf_client_register_callback(hfp_cb);
     esp_hf_client_init();
+
+    int bonded = esp_bt_gap_get_bond_device_num();
+    ESP_LOGI(TAG, "bonded devices in NVS: %d (waiting for phone)", bonded);
+
+    // Boot-reconnect: через 5с после старта пробуем сами достучаться до
+    // последнего парного телефона. Если он рядом — поднимется ACL и HFP.
+    if (bonded > 0)
+        xTaskCreate(boot_reconnect_task, "bt_boot", 3072, NULL, 5, NULL);
 }
 
 void bt_hfp_dial(const char *number)  { esp_hf_client_dial(number);          }

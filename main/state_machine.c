@@ -17,6 +17,14 @@ static phone_state_t      s_state = STATE_IDLE;
 static char               s_number[16];
 static int                s_num_len;
 static esp_timer_handle_t s_dial_timer;
+static int                s_idle_nines = 0;   // подряд набранные «9» при положенной трубке
+static int                s_idle_zeros = 0;   // подряд набранные «0» при положенной трубке
+
+// Sweep блокирующий (~20с) — запускаем в отдельной задаче, не в контексте диспетчера
+static void sweep_task(void *arg) {
+    bell_sweep_test();
+    vTaskDelete(NULL);
+}
 
 static void dial_complete_cb(void *arg) {
     ESP_LOGI(TAG, "dial complete: %s", s_number);
@@ -83,8 +91,32 @@ void sm_dispatch(phone_event_t evt, uint32_t data) {
     switch (s_state) {
 
     case STATE_IDLE:
-        if (evt == EVT_HOOK_OFF)    enter(STATE_DIAL_TONE);
+        if (evt == EVT_HOOK_OFF)    { s_idle_nines = 0; s_idle_zeros = 0; enter(STATE_DIAL_TONE); }
         if (evt == EVT_BT_INCOMING) enter(STATE_RINGING);
+        // Сервис-коды при положенной трубке:
+        //   999 → sweep-тест звонка
+        //   000 → сброс всех pairing
+        if (evt == EVT_DIGIT) {
+            if (data == 9) {
+                s_idle_zeros = 0;
+                if (++s_idle_nines >= 3) {
+                    s_idle_nines = 0;
+                    ESP_LOGI(TAG, "service 999 -> bell sweep");
+                    xTaskCreate(sweep_task, "bell_sweep", 3072, NULL, 5, NULL);
+                }
+            } else if (data == 0) {
+                s_idle_nines = 0;
+                if (++s_idle_zeros >= 3) {
+                    s_idle_zeros = 0;
+                    ESP_LOGI(TAG, "service 000 -> reset pairing");
+                    bt_hfp_reset_pairing();
+                    confirm_reset();
+                }
+            } else {
+                s_idle_nines = 0;
+                s_idle_zeros = 0;
+            }
+        }
         break;
 
     case STATE_DIAL_TONE:
